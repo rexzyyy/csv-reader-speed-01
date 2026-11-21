@@ -1,6 +1,6 @@
 export function run(input) {
   const text = String(input.text);
-  const n = text.length;
+  const length = text.length;
   const header = input.header === true;
   const rows = [];
   const errors = [];
@@ -10,130 +10,155 @@ export function run(input) {
   let line = 1;
   let recordLine = 1;
   let recordRow = null;
-  const addError = (code, extraKey, extraValue) => {
-    const e = { code, line: recordLine, row: recordRow };
-    if (extraKey) e[extraKey] = extraValue;
-    errors.push(e);
-  };
 
   while (true) {
-    while (pos < n) {
-      const c = text.charCodeAt(pos);
-      if (c === 10) { pos++; line++; }
-      else if (c === 13 && text.charCodeAt(pos + 1) === 10) { pos += 2; line++; }
+    while (pos < length) {
+      const code = text.charCodeAt(pos);
+      if (code === 10) { pos++; line++; }
+      else if (code === 13 && text.charCodeAt(pos + 1) === 10) { pos += 2; line++; }
       else break;
     }
-    if (pos >= n) break;
+    if (pos >= length) break;
     recordLine = line;
     recordRow = header && columns === null ? null : rows.length;
     const fields = [];
-    let lastQuoted = false;
     let ended;
+    let lastWasQuoted;
+
     do {
       ended = 0;
-      lastQuoted = text.charCodeAt(pos) === 34;
+      lastWasQuoted = text.charCodeAt(pos) === 34;
+      let fallbackUnquoted = false;
       let value = '';
-      if (lastQuoted) {
+
+      if (lastWasQuoted) {
         const open = pos;
         const openLine = line;
-        let q = pos + 1;
+        let scan = open + 1;
         let close = -1;
-        while (q < n) {
-          q = text.indexOf('"', q);
-          if (q < 0) break;
-          if (text.charCodeAt(q + 1) === 34) { q += 2; continue; }
-          close = q;
+        while (scan < length) {
+          scan = text.indexOf('"', scan);
+          if (scan < 0) break;
+          if (text.charCodeAt(scan + 1) === 34) { scan += 2; continue; }
+          close = scan;
           break;
         }
+
         if (close < 0) {
           pos = open + 1;
           line = openLine;
-          addError('unterminated_quote');
-          lastQuoted = false;
+          errors.push({ code: 'unterminated_quote', line: recordLine, row: recordRow });
+          fallbackUnquoted = true;
           value = '"';
         } else {
           const raw = text.slice(open + 1, close);
           value = raw;
-          if (raw.includes('""')) value = value.split('""').join('"');
-          if (raw.includes('\r')) value = value.replace(/\r\n|\r/g, '\n');
-          for (let k = open + 1; k < close; k++) {
-            const ch = text.charCodeAt(k);
-            if (ch === 13) { line++; if (text.charCodeAt(k + 1) === 10) k++; }
-            else if (ch === 10) line++;
+          if (raw.indexOf('""') >= 0) value = raw.replace(/""/g, '"');
+          if (raw.indexOf('\r') >= 0) value = value.replace(/\r\n|\r/g, '\n');
+
+          let found = raw.indexOf('\n');
+          while (found >= 0) {
+            line++;
+            found = raw.indexOf('\n', found + 1);
           }
+          found = raw.indexOf('\r');
+          while (found >= 0) {
+            if (raw.charCodeAt(found + 1) !== 10) line++;
+            found = raw.indexOf('\r', found + 1);
+          }
+
           pos = close + 1;
-          if (pos < n && text.charCodeAt(pos) === 44) { pos++; ended = 1; }
-          else if (pos < n && text.charCodeAt(pos) === 10) { pos++; line++; ended = 2; }
-          else if (pos + 1 < n && text.charCodeAt(pos) === 13 && text.charCodeAt(pos + 1) === 10) { pos += 2; line++; ended = 2; }
-          else if (pos >= n) ended = 3;
+          if (pos < length && text.charCodeAt(pos) === 44) { pos++; ended = 1; }
+          else if (pos < length && text.charCodeAt(pos) === 10) { pos++; line++; ended = 2; }
+          else if (pos + 1 < length && text.charCodeAt(pos) === 13 && text.charCodeAt(pos + 1) === 10) { pos += 2; line++; ended = 2; }
+          else if (pos >= length) ended = 3;
           else {
-            let segmentStart = pos;
-            let junkParts = '';
-            let junkKept = 0;
-            while (pos < n) {
-              const d = text.charCodeAt(pos);
-              if (d === 44 || d === 10 || (d === 13 && text.charCodeAt(pos + 1) === 10)) break;
-              if (d === 13) {
-                const kept = text.slice(segmentStart, pos);
-                junkParts += kept; junkKept += kept.length;
-                addError('stray_cr'); pos++; segmentStart = pos;
-              } else pos++;
+            let segment = pos;
+            let junk = '';
+            let junkLength = 0;
+            while (pos < length) {
+              let comma = text.indexOf(',', pos);
+              let lf = text.indexOf('\n', pos);
+              let stop = length;
+              if (comma >= 0 && comma < stop) stop = comma;
+              if (lf >= 0 && lf < stop) stop = lf;
+              const cr = text.indexOf('\r', pos);
+              if (cr >= 0 && cr < stop) stop = cr;
+              if (stop > pos) pos = stop;
+              if (pos >= length) break;
+              const code = text.charCodeAt(pos);
+              if (code === 44) { junk += text.slice(segment, pos); junkLength += pos - segment; pos++; segment = pos; ended = 1; break; }
+              if (code === 10) { junk += text.slice(segment, pos); junkLength += pos - segment; pos++; segment = pos; line++; ended = 2; break; }
+              if (text.charCodeAt(pos + 1) === 10) { junk += text.slice(segment, pos); junkLength += pos - segment; pos += 2; segment = pos; line++; ended = 2; break; }
+              const part = text.slice(segment, pos);
+              junk += part;
+              junkLength += part.length;
+              errors.push({ code: 'stray_cr', line: recordLine, row: recordRow });
+              pos++;
+              segment = pos;
             }
-            const tail = text.slice(segmentStart, pos);
-            junkParts += tail; junkKept += tail.length;
-            value += junkParts;
-            if (junkKept) addError('quote_junk');
-            if (pos < n && text.charCodeAt(pos) === 44) { pos++; ended = 1; }
-            else if (pos < n && text.charCodeAt(pos) === 10) { pos++; line++; ended = 2; }
-            else if (pos + 1 < n && text.charCodeAt(pos + 1) === 10) { pos += 2; line++; ended = 2; }
-            else if (pos < n && text.charCodeAt(pos) === 13) {
-              addError('stray_cr'); pos++;
-              while (pos < n && text.charCodeAt(pos) !== 44 && text.charCodeAt(pos) !== 10 && text.charCodeAt(pos) !== 13) pos++;
-              if (pos < n && text.charCodeAt(pos) === 44) { pos++; ended = 1; }
-              else if (pos < n && text.charCodeAt(pos) === 10) { pos++; line++; ended = 2; }
-              else if (pos + 1 < n && text.charCodeAt(pos) === 13 && text.charCodeAt(pos + 1) === 10) { pos += 2; line++; ended = 2; }
-              else ended = 3;
-            }
-            else ended = 3;
+            const tail = text.slice(segment, pos);
+            junk += tail;
+            junkLength += tail.length;
+            value += junk;
+            if (junkLength > 0) errors.push({ code: 'quote_junk', line: recordLine, row: recordRow });
+            if (ended === 0) ended = 3;
           }
         }
       }
-      if (!lastQuoted) {
+
+      if (!lastWasQuoted || fallbackUnquoted) {
+        const initial = value;
         const start = pos;
-        let first = value;
-        while (pos < n) {
-          let comma = text.indexOf(',', pos);
-          let lf = text.indexOf('\n', pos);
-          let cr = text.indexOf('\r', pos);
-          let stop = n;
-          if (comma >= 0 && comma < stop) stop = comma;
-          if (lf >= 0 && lf < stop) stop = lf;
-          if (cr >= 0 && cr < stop) stop = cr;
-          if (stop > pos) { value = first + text.slice(pos, stop); first = ''; pos = stop; }
-          if (pos >= n) break;
-          const d = text.charCodeAt(pos);
-          if (d === 44) { pos++; ended = 1; break; }
-          if (d === 10) { pos++; line++; ended = 2; break; }
-          if (text.charCodeAt(pos + 1) === 10) { pos += 2; line++; ended = 2; break; }
-          addError('stray_cr');
-          pos++;
-          first = value;
-          value = '';
+        let comma = text.indexOf(',', pos);
+        let lf = text.indexOf('\n', pos);
+        let stop = length;
+        if (comma >= 0 && comma < stop) stop = comma;
+        if (lf >= 0 && lf < stop) stop = lf;
+        let cr = text.indexOf('\r', pos);
+        if (cr >= 0 && cr < stop && text.charCodeAt(cr + 1) === 10) stop = cr;
+        if (cr >= 0 && cr < stop) {
+          let segment = start;
+          let parts = '';
+          while (cr >= 0 && cr < stop) {
+            parts += text.slice(segment, cr);
+            errors.push({ code: 'stray_cr', line: recordLine, row: recordRow });
+            pos = cr + 1;
+            segment = pos;
+            comma = text.indexOf(',', pos);
+            lf = text.indexOf('\n', pos);
+            stop = length;
+            if (comma >= 0 && comma < stop) stop = comma;
+            if (lf >= 0 && lf < stop) stop = lf;
+            cr = text.indexOf('\r', pos);
+            if (cr >= 0 && cr < stop && text.charCodeAt(cr + 1) === 10) stop = cr;
+            if (cr < 0 || cr >= stop) break;
+          }
+          parts += text.slice(segment, stop);
+          value = initial + parts;
+        } else {
+          value = initial + text.slice(start, stop);
         }
-        if (pos >= n && ended === 0) ended = 3;
+        pos = stop;
+        if (pos >= length) ended = 3;
+        else {
+          const code = text.charCodeAt(pos);
+          if (code === 44) { pos++; ended = 1; }
+          else if (code === 10) { pos++; line++; ended = 2; }
+          else { pos += 2; line++; ended = 2; }
+        }
       }
       fields.push(value);
     } while (ended === 1);
 
-    if (fields.length === 1 && fields[0] === '' && !lastQuoted) continue;
+    if (fields.length === 1 && fields[0] === '' && !lastWasQuoted) continue;
     if (width < 0) width = fields.length;
     if (header && columns === null) { columns = fields; continue; }
     if (fields.length < width) {
-      addError('short_row', 'fields', fields.length);
+      errors.push({ code: 'short_row', line: recordLine, row: recordRow, fields: fields.length });
       while (fields.length < width) fields.push('');
     } else if (fields.length > width) {
-      const extra = fields.splice(width);
-      addError('long_row', 'extra', extra);
+      errors.push({ code: 'long_row', line: recordLine, row: recordRow, extra: fields.splice(width) });
     }
     rows.push(fields);
   }
